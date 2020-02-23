@@ -28,13 +28,22 @@ var crypto = require('crypto');
 
 
 // Defaults
+var server = "share1.dexcom.com";
+var bridge = readENV('BRIDGE_SERVER')
+    if (bridge && bridge.indexOf(".") > 1) {
+    server = bridge;
+   } 
+    else if (bridge && bridge === 'EU') {
+        server = "shareous1.dexcom.com";
+    } 
+
 var Defaults = {
   "applicationId":"d89443d2-327c-4a6f-89e5-496bbb0317db"
 , "agent": "Dexcom Share/3.0.2.11 CFNetwork/711.2.23 Darwin/14.0.0"
-, login: 'https://share1.dexcom.com/ShareWebServices/Services/General/LoginPublisherAccountByName'
+, login: 'https://' + server + '/ShareWebServices/Services/General/LoginPublisherAccountByName'
 , accept: 'application/json'
 , 'content-type': 'application/json'
-, LatestGlucose: "https://share1.dexcom.com/ShareWebServices/Services/Publisher/ReadPublisherLatestGlucoseValues"
+, LatestGlucose: 'https://' + server + '/ShareWebServices/Services/Publisher/ReadPublisherLatestGlucoseValues'
 // ?sessionID=e59c836f-5aeb-4b95-afa2-39cf2769fede&minutes=1440&maxCount=1"
 , nightscout_upload: '/api/v1/entries.json'
 , nightscout_battery: '/api/v1/devicestatus.json'
@@ -202,7 +211,7 @@ function engine (opts) {
       }
       fetch_opts.sessionID = my.sessionID;
       fetch(fetch_opts, function (err, res, glucose) {
-        if (res.statusCode < 400) {
+        if (res && res.statusCode < 400) {
           to_nightscout(glucose);
         } else {
           my.sessionID = null;
@@ -218,13 +227,14 @@ function engine (opts) {
   function refresh_token ( ) {
     console.log('Fetching new token');
     authorize(opts.login, function (err, res, body) {
-      if (!err && body && res.statusCode == 200) {
+      if (!err && body && res && res.statusCode == 200) {
         my.sessionID = body;
         failures = 0;
         my( );
       } else {
         failures++;
-        console.log("Error refreshing token", err, res.statusCode, body);
+        var responseStatus = res ? res.statusCode : "response not found";
+        console.log("Error refreshing token", err, responseStatus, body);
         if (failures >= opts.maxFailures) {
           throw "Too many login failures, check DEXCOM_ACCOUNT_NAME and DEXCOM_PASSWORD";
         }
@@ -235,20 +245,23 @@ function engine (opts) {
   function to_nightscout (glucose) {
     var ns_config = Object.create(opts.nightscout);
     if (glucose) {
-      if (runs === 0) {
-        nullify_battery_status(ns_config, function (err, resp) {
-          if (err) {
-            console.warn('Problem reporting battery', arguments);
-          } else {
-            console.log('Battery status hidden');
-          }
-        });
-      }
       runs++;
       // Translate to Nightscout data.
       var entries = glucose.map(dex_to_entry);
       console.log('Entries', entries);
+      if (opts && opts.callback && opts.callback.call) {
+        opts.callback(null, entries);
+      }
       if (ns_config.endpoint) {
+        if (runs === 0) {
+          nullify_battery_status(ns_config, function (err, resp) {
+            if (err) {
+              console.warn('Problem reporting battery', arguments);
+            } else {
+              console.log('Battery status hidden');
+            }
+          });
+        }
         ns_config.entries = entries;
         // Send data to Nightscout.
         report_to_nightscout(ns_config, function (err, response, body) {
@@ -306,6 +319,7 @@ if (!module.parent) {
   , endpoint: readENV('NS', 'https://' + readENV('WEBSITE_HOSTNAME'))
   };
   var interval = readENV('SHARE_INTERVAL', 60000 * 2.5);
+  interval = Math.max(60000, interval);
   var fetch_config = { maxCount: readENV('maxCount', 1)
     , minutes: readENV('minutes', 1440)
   };
